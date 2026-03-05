@@ -38,7 +38,9 @@ def expected_end_value_from_source_close(
         )
 
     last_close = float(close_values.iloc[-1])
-    return last_close + float(np.sum(predicted_delta))
+    predicted_delta = np.asarray(predicted_delta, dtype=float)
+    growth_factor = float(np.prod(1.0 + predicted_delta))
+    return last_close * growth_factor
 
 
 def run_forecast(
