@@ -48,6 +48,7 @@ def run_forecast(
 
     rng = np.random.default_rng(seed)
     start = int(rng.integers(0, len(df) - required_rows + 1))
+    start = 4000
     segment = df.iloc[start : start + required_rows].reset_index(drop=True)
 
     context_target = segment[target_col].iloc[:context_len].astype(float).to_numpy()
@@ -87,10 +88,12 @@ def run_forecast(
     print(f"Random segment start index: {start}")
     print(f"Context length: {context_len}")
     print(f"Forecast horizon: {horizon}")
-    print("\nPredicted Delta values (next 10):")
-    print(np.array2string(pred, precision=6, separator=", "))
     print("\nActual Delta values:")
-    print(np.array2string(true_future.astype(float), precision=6, separator=", "))
+    print(np.array2string(true_future.astype(float), precision=12, separator=", "))
+    print("\nPredicted Delta values (next 10):")
+    print(np.array2string(pred, precision=12, separator=", "))
+    print("\nContext tail Delta values (last horizon):")
+    print(np.array2string(context_target[-horizon:].astype(float), precision=6, separator=", "))
 
 
 if __name__ == "__main__":
