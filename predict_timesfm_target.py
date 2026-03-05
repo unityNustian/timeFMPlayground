@@ -43,13 +43,13 @@ def expected_end_value_from_source_close(
     return last_close * growth_factor
 
 
-def run_forecast(
+def run_prediction(
     csv_path: Path,
     source_csv_path: Path,
     target_col: str,
     close_col: str,
     context_len: int,
-    horizon: int,
+    predict_len: int,
     seed: int,
 ) -> None:
     df = pd.read_csv(csv_path)
@@ -58,27 +58,21 @@ def run_forecast(
 
     df = df.select_dtypes(include=[np.number]).copy()
     if df.empty:
-        raise ValueError("No numeric columns found. TimesFM covariates must be numeric.")
+        raise ValueError("No numeric columns found.")
 
     target_col = resolve_target_column(df, target_col)
 
-    required_rows = context_len + horizon
-    if len(df) < required_rows:
-        raise ValueError(
-            f"Need at least {required_rows} rows, but found {len(df)} rows."
-        )
+    if context_len <= 0:
+        raise ValueError("--context-len must be > 0")
+    if predict_len <= 0:
+        raise ValueError("--predict-len must be > 0")
+    if len(df) < context_len:
+        raise ValueError(f"Need at least {context_len} rows, but found {len(df)} rows.")
 
     rng = np.random.default_rng(seed)
-    start = int(rng.integers(0, len(df) - required_rows + 1))
-    start = 2500
-    segment = df.iloc[start : start + required_rows].reset_index(drop=True)
-
-    context_target = segment[target_col].iloc[:context_len].astype(float).to_numpy()
-    true_future = segment[target_col].iloc[context_len : context_len + horizon].to_numpy()
-
-    dynamic_numerical_covariates = {
-        col: [segment[col].astype(float).to_list()] for col in segment.columns
-    }
+    start = int(rng.integers(0, len(df) - context_len + 1))
+    segment = df.iloc[start : start + context_len].reset_index(drop=True)
+    context_target = segment[target_col].astype(float).to_numpy()
 
     torch.set_float32_matmul_precision("high")
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
@@ -87,7 +81,7 @@ def run_forecast(
     model.compile(
         timesfm.ForecastConfig(
             max_context=max(1024, context_len),
-            max_horizon=max(128, horizon),
+            max_horizon=max(128, predict_len),
             normalize_inputs=True,
             use_continuous_quantile_head=True,
             force_flip_invariance=True,
@@ -97,25 +91,20 @@ def run_forecast(
         )
     )
 
-    point_forecast, _ = model.forecast_with_covariates(
+    point_forecast, _ = model.forecast(
+        horizon=predict_len,
         inputs=[context_target],
-        dynamic_numerical_covariates=dynamic_numerical_covariates,
-        xreg_mode="xreg + timesfm",
     )
-
     pred = np.asarray(point_forecast[0], dtype=float)
 
     print(f"CSV: {csv_path}")
     print(f"Target column: {target_col}")
-    print(f"Random segment start index: {start}")
+    print(f"Random context start index: {start}")
     print(f"Context length: {context_len}")
-    print(f"Forecast horizon: {horizon}")
-    print("\nActual Delta values:")
-    print(np.array2string(true_future.astype(float), precision=12, separator=", "))
-    print(np.sum(true_future)*100)
-    print("\nPredicted Delta values (next 10):")
+    print(f"Prediction length: {predict_len}")
+    print("\nPredicted Delta values:")
     print(np.array2string(pred, precision=12, separator=", "))
-    print(np.sum(pred)*100)
+    print(np.sum(pred) * 100)
 
     expected_end_value = expected_end_value_from_source_close(
         source_csv_path=source_csv_path,
@@ -127,10 +116,7 @@ def run_forecast(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description=(
-            "Forecast 10 future Delta values from a random 500-row segment using TimesFM, "
-            "with all columns as past dynamic covariates (including Delta)."
-        )
+        description="Predict future Delta values from historical context using TimesFM."
     )
     parser.add_argument("--csv", type=Path, default=Path("target.csv"), help="Path to target CSV")
     parser.add_argument(
@@ -139,16 +125,16 @@ if __name__ == "__main__":
     parser.add_argument("--target-col", type=str, default="delta", help="Target column name")
     parser.add_argument("--close-col", type=str, default="close", help="Close column name in source CSV")
     parser.add_argument("--context-len", type=int, default=500, help="Input context length")
-    parser.add_argument("--horizon", type=int, default=10, help="Forecast horizon")
+    parser.add_argument("--predict-len", type=int, default=10, help="Number of values to predict")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     args = parser.parse_args()
-    run_forecast(
+    run_prediction(
         csv_path=args.csv,
         source_csv_path=args.source_csv,
         target_col=args.target_col,
         close_col=args.close_col,
         context_len=args.context_len,
-        horizon=args.horizon,
+        predict_len=args.predict_len,
         seed=args.seed,
     )
