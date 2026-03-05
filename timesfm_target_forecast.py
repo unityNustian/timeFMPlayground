@@ -1,0 +1,116 @@
+import os
+os.environ["JAX_PLATFORMS"] = "cpu"
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import timesfm
+import torch
+
+
+def resolve_target_column(df: pd.DataFrame, requested: str) -> str:
+    if requested in df.columns:
+        return requested
+
+    lower_map = {c.lower(): c for c in df.columns}
+    if requested.lower() in lower_map:
+        return lower_map[requested.lower()]
+
+    raise ValueError(
+        f"Target column '{requested}' was not found. Available columns: {list(df.columns)}"
+    )
+
+
+def run_forecast(
+    csv_path: Path,
+    target_col: str,
+    context_len: int,
+    horizon: int,
+    seed: int,
+) -> None:
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        raise ValueError(f"CSV is empty: {csv_path}")
+
+    df = df.select_dtypes(include=[np.number]).copy()
+    if df.empty:
+        raise ValueError("No numeric columns found. TimesFM covariates must be numeric.")
+
+    target_col = resolve_target_column(df, target_col)
+
+    required_rows = context_len + horizon
+    if len(df) < required_rows:
+        raise ValueError(
+            f"Need at least {required_rows} rows, but found {len(df)} rows."
+        )
+
+    rng = np.random.default_rng(seed)
+    start = int(rng.integers(0, len(df) - required_rows + 1))
+    segment = df.iloc[start : start + required_rows].reset_index(drop=True)
+
+    context_target = segment[target_col].iloc[:context_len].astype(float).to_numpy()
+    true_future = segment[target_col].iloc[context_len : context_len + horizon].to_numpy()
+
+    dynamic_numerical_covariates = {
+        col: [segment[col].astype(float).to_list()] for col in segment.columns
+    }
+
+    torch.set_float32_matmul_precision("high")
+    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
+        "google/timesfm-2.5-200m-pytorch"
+    )
+    model.compile(
+        timesfm.ForecastConfig(
+            max_context=max(1024, context_len),
+            max_horizon=max(128, horizon),
+            normalize_inputs=True,
+            use_continuous_quantile_head=True,
+            force_flip_invariance=True,
+            infer_is_positive=True,
+            fix_quantile_crossing=True,
+            return_backcast=True,
+        )
+    )
+
+    point_forecast, _ = model.forecast_with_covariates(
+        inputs=[context_target],
+        dynamic_numerical_covariates=dynamic_numerical_covariates,
+        xreg_mode="xreg + timesfm",
+    )
+
+    pred = np.asarray(point_forecast[0], dtype=float)
+
+    print(f"CSV: {csv_path}")
+    print(f"Target column: {target_col}")
+    print(f"Random segment start index: {start}")
+    print(f"Context length: {context_len}")
+    print(f"Forecast horizon: {horizon}")
+    print("\nPredicted Delta values (next 10):")
+    print(np.array2string(pred, precision=6, separator=", "))
+    print("\nActual Delta values:")
+    print(np.array2string(true_future.astype(float), precision=6, separator=", "))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description=(
+            "Forecast 10 future Delta values from a random 500-row segment using TimesFM, "
+            "with all columns as past dynamic covariates (including Delta)."
+        )
+    )
+    parser.add_argument("--csv", type=Path, default=Path("target.csv"), help="Path to target CSV")
+    parser.add_argument("--target-col", type=str, default="delta", help="Target column name")
+    parser.add_argument("--context-len", type=int, default=500, help="Input context length")
+    parser.add_argument("--horizon", type=int, default=10, help="Forecast horizon")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
+    args = parser.parse_args()
+    run_forecast(
+        csv_path=args.csv,
+        target_col=args.target_col,
+        context_len=args.context_len,
+        horizon=args.horizon,
+        seed=args.seed,
+    )
