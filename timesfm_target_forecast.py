@@ -112,8 +112,10 @@ def run_forecast(
     print(f"Forecast horizon: {horizon}")
     print("\nActual Delta values:")
     print(np.array2string(true_future.astype(float), precision=12, separator=", "))
+    print(np.sum(true_future)*100)
     print("\nPredicted Delta values (next 10):")
     print(np.array2string(pred, precision=12, separator=", "))
+    print(np.sum(pred)*100)
 
     expected_end_value = expected_end_value_from_source_close(
         source_csv_path=source_csv_path,
