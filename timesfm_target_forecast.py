@@ -23,9 +23,29 @@ def resolve_target_column(df: pd.DataFrame, requested: str) -> str:
     )
 
 
+def expected_end_value_from_source_close(
+    source_csv_path: Path, predicted_delta: np.ndarray, close_col: str = "close"
+) -> float:
+    source_df = pd.read_csv(source_csv_path)
+    if source_df.empty:
+        raise ValueError(f"Source CSV is empty: {source_csv_path}")
+
+    close_col = resolve_target_column(source_df, close_col)
+    close_values = pd.to_numeric(source_df[close_col], errors="coerce").dropna()
+    if close_values.empty:
+        raise ValueError(
+            f"Close column '{close_col}' has no numeric values in {source_csv_path}"
+        )
+
+    last_close = float(close_values.iloc[-1])
+    return last_close + float(np.sum(predicted_delta))
+
+
 def run_forecast(
     csv_path: Path,
+    source_csv_path: Path,
     target_col: str,
+    close_col: str,
     context_len: int,
     horizon: int,
     seed: int,
@@ -48,7 +68,7 @@ def run_forecast(
 
     rng = np.random.default_rng(seed)
     start = int(rng.integers(0, len(df) - required_rows + 1))
-    start = 4000
+    start = 2500
     segment = df.iloc[start : start + required_rows].reset_index(drop=True)
 
     context_target = segment[target_col].iloc[:context_len].astype(float).to_numpy()
@@ -95,6 +115,13 @@ def run_forecast(
     print("\nContext tail Delta values (last horizon):")
     print(np.array2string(context_target[-horizon:].astype(float), precision=6, separator=", "))
 
+    expected_end_value = expected_end_value_from_source_close(
+        source_csv_path=source_csv_path,
+        predicted_delta=pred,
+        close_col=close_col,
+    )
+    print(f"\nExpected end value from {source_csv_path} ({close_col}): {expected_end_value:.12f}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -104,7 +131,11 @@ if __name__ == "__main__":
         )
     )
     parser.add_argument("--csv", type=Path, default=Path("target.csv"), help="Path to target CSV")
+    parser.add_argument(
+        "--source-csv", type=Path, default=Path("source.csv"), help="Path to source CSV with close values"
+    )
     parser.add_argument("--target-col", type=str, default="delta", help="Target column name")
+    parser.add_argument("--close-col", type=str, default="close", help="Close column name in source CSV")
     parser.add_argument("--context-len", type=int, default=500, help="Input context length")
     parser.add_argument("--horizon", type=int, default=10, help="Forecast horizon")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -112,7 +143,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     run_forecast(
         csv_path=args.csv,
+        source_csv_path=args.source_csv,
         target_col=args.target_col,
+        close_col=args.close_col,
         context_len=args.context_len,
         horizon=args.horizon,
         seed=args.seed,
