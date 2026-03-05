@@ -104,12 +104,19 @@ def run_forecast(
     print(f"Random segment start index: {start}")
     print(f"Context length: {context_len}")
     print(f"Forecast horizon: {horizon}")
+    print(f"\nLast {horizon} context values:")
+    print(
+        np.array2string(
+            context_target[-horizon:].astype(float), precision=6, separator=", "
+        )
+    )
+    print(np.sum(context_target[-horizon:]))
     print("\nActual Delta values:")
     print(np.array2string(true_future.astype(float), precision=6, separator=", "))
-    print(np.sum(true_future)*100)
+    print(np.sum(true_future))
     print("\nPredicted Delta values (next 10):")
     print(np.array2string(pred, precision=6, separator=", "))
-    print(np.sum(pred)*100)
+    print(np.sum(pred))
 
     expected_end_value = expected_end_value_from_source_close(
         source_csv_path=source_csv_path,
@@ -130,7 +137,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--source-csv", type=Path, default=Path("source.csv"), help="Path to source CSV with close values"
     )
-    parser.add_argument("--target-col", type=str, default="delta", help="Target column name")
+    parser.add_argument("--target-col", type=str, default="close", help="Target column name")
     parser.add_argument("--close-col", type=str, default="close", help="Close column name in source CSV")
     parser.add_argument("--context-len", type=int, default=500, help="Input context length")
     parser.add_argument("--horizon", type=int, default=10, help="Forecast horizon")

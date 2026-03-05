@@ -43,6 +43,23 @@ def expected_end_value_from_source_close(
     return last_close * growth_factor
 
 
+def build_past_only_dynamic_covariates(
+    context_df: pd.DataFrame, horizon: int, strategy: str
+) -> dict[str, list[list[float]]]:
+    covariates: dict[str, list[list[float]]] = {}
+    for col in context_df.columns:
+        history = context_df[col].astype(float).to_list()
+        if strategy == "repeat_last":
+            fill_value = history[-1] if history else 0.0
+            future = [float(fill_value)] * horizon
+        elif strategy == "zeros":
+            future = [0.0] * horizon
+        else:
+            raise ValueError(f"Unsupported future covariate strategy: {strategy}")
+        covariates[col] = [history + future]
+    return covariates
+
+
 def run_forecast(
     csv_path: Path,
     source_csv_path: Path,
@@ -51,6 +68,7 @@ def run_forecast(
     context_len: int,
     horizon: int,
     seed: int,
+    future_cov_strategy: str,
 ) -> None:
     df = pd.read_csv(csv_path)
     if df.empty:
@@ -74,11 +92,8 @@ def run_forecast(
     segment = df.iloc[start : start + required_rows].reset_index(drop=True)
 
     context_target = segment[target_col].iloc[:context_len].astype(float).to_numpy()
+    context_covariates_df = segment.iloc[:context_len].copy()
     true_future = segment[target_col].iloc[context_len : context_len + horizon].to_numpy()
-
-    dynamic_numerical_covariates = {
-        col: [segment[col].astype(float).to_list()] for col in segment.columns
-    }
 
     torch.set_float32_matmul_precision("high")
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
@@ -97,11 +112,22 @@ def run_forecast(
         )
     )
 
-    point_forecast, _ = model.forecast_with_covariates(
-        inputs=[context_target],
-        pas=dynamic_numerical_covariates,
-        xreg_mode="xreg + timesfm",
-    )
+    if future_cov_strategy == "none":
+        point_forecast, _ = model.forecast(
+            horizon=horizon,
+            inputs=[context_target],
+        )
+    else:
+        dynamic_numerical_covariates = build_past_only_dynamic_covariates(
+            context_df=context_covariates_df,
+            horizon=horizon,
+            strategy=future_cov_strategy,
+        )
+        point_forecast, _ = model.forecast_with_covariates(
+            inputs=[context_target],
+            dynamic_numerical_covariates=dynamic_numerical_covariates,
+            xreg_mode="xreg + timesfm",
+        )
 
     pred = np.asarray(point_forecast[0], dtype=float)
 
@@ -110,6 +136,7 @@ def run_forecast(
     print(f"Random segment start index: {start}")
     print(f"Context length: {context_len}")
     print(f"Forecast horizon: {horizon}")
+    print(f"Future covariate strategy: {future_cov_strategy}")
     print("\nActual Delta values:")
     print(np.array2string(true_future.astype(float), precision=12, separator=", "))
     print(np.sum(true_future)*100)
@@ -129,7 +156,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Forecast 10 future Delta values from a random 500-row segment using TimesFM, "
-            "with all columns as past dynamic covariates (including Delta)."
+            "using past covariates only. Future covariates are either imputed "
+            "or xreg is disabled."
         )
     )
     parser.add_argument("--csv", type=Path, default=Path("target.csv"), help="Path to target CSV")
@@ -141,6 +169,18 @@ if __name__ == "__main__":
     parser.add_argument("--context-len", type=int, default=500, help="Input context length")
     parser.add_argument("--horizon", type=int, default=10, help="Forecast horizon")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--future-cov-strategy",
+        type=str,
+        default="repeat_last",
+        choices=["repeat_last", "zeros", "none"],
+        help=(
+            "How to handle unknown future dynamic covariates: "
+            "'repeat_last' repeats last observed value, "
+            "'zeros' fills zeros, "
+            "'none' disables covariates and uses plain TimesFM forecast."
+        ),
+    )
 
     args = parser.parse_args()
     run_forecast(
@@ -151,4 +191,5 @@ if __name__ == "__main__":
         context_len=args.context_len,
         horizon=args.horizon,
         seed=args.seed,
+        future_cov_strategy=args.future_cov_strategy,
     )
