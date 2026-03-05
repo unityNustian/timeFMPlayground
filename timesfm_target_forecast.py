@@ -114,8 +114,6 @@ def run_forecast(
     print(np.array2string(true_future.astype(float), precision=12, separator=", "))
     print("\nPredicted Delta values (next 10):")
     print(np.array2string(pred, precision=12, separator=", "))
-    print("\nContext tail Delta values (last horizon):")
-    print(np.array2string(context_target[-horizon:].astype(float), precision=6, separator=", "))
 
     expected_end_value = expected_end_value_from_source_close(
         source_csv_path=source_csv_path,
