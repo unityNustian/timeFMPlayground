@@ -130,22 +130,28 @@ class TimeSeriesDataset(Dataset):
 
     Keys returned per sample
     ─────────────────────────────────────────────────────────────────────────
-    past_values            (context_length, 1)
-    past_time_features     (context_length, NUM_TIME_FEATURES)
-    past_observed_mask     (context_length, 1)
-    past_dynamic_real      (context_length, num_covariates)   ← your covariates
-    future_values          (prediction_length, 1)
-    future_time_features   (prediction_length, NUM_TIME_FEATURES)
+    past_values            (past_length,) where past_length=context_length+max(lag)
+    past_time_features     (past_length, NUM_TIME_FEATURES + num_covariates)
+    past_observed_mask     (past_length,)
+    future_values          (prediction_length,)
+    future_time_features   (prediction_length, NUM_TIME_FEATURES + num_covariates)
     """
 
     def __init__(self, target: np.ndarray, covariates: np.ndarray, cfg: TrainConfig):
         self.target     = target        # (N, T)
         self.covariates = covariates    # (N, T, C)
         self.cfg        = cfg
+        self.past_length = cfg.context_length + max(cfg.lags_sequence)
         T = target.shape[1]
         self.time_feats = make_time_features(T)
 
-        total = cfg.context_length + cfg.prediction_length
+        total = self.past_length + cfg.prediction_length
+        if T < total:
+            raise ValueError(
+                f"Series length ({T}) is too short for context_length={cfg.context_length}, "
+                f"prediction_length={cfg.prediction_length}, lags={cfg.lags_sequence}. "
+                f"Need at least {total} timesteps."
+            )
         self.samples = [
             (i, end)
             for i in range(target.shape[0])
@@ -158,28 +164,32 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         si, end = self.samples[idx]
         cfg   = self.cfg
-        start = end - (cfg.context_length + cfg.prediction_length)
+        start = end - (self.past_length + cfg.prediction_length)
 
         vals          = self.target[si, start:end]
-        past_values   = vals[:cfg.context_length]
-        future_values = vals[cfg.context_length:]
+        past_values   = vals[:self.past_length]
+        future_values = vals[self.past_length:]
 
         feats        = self.time_feats[start:end]
-        past_feats   = feats[:cfg.context_length]
-        future_feats = feats[cfg.context_length:]
+        past_feats   = feats[:self.past_length]
+        future_feats = feats[self.past_length:]
 
-        # Covariates are only available for the past window
-        past_cov = self.covariates[si, start : start + cfg.context_length]   # (ctx, C)
+        # Transformers expects dynamic real features in both past and future time features.
+        # If future covariates are unknown, we zero-fill them.
+        past_cov = self.covariates[si, start : start + self.past_length]     # (past_length, C)
+        future_cov = np.zeros((cfg.prediction_length, cfg.num_covariates), dtype=np.float32)
 
-        observed = np.ones(cfg.context_length, dtype=np.float32)
+        past_time_features = np.concatenate([past_feats, past_cov], axis=-1).astype(np.float32)
+        future_time_features = np.concatenate([future_feats, future_cov], axis=-1).astype(np.float32)
+
+        observed = np.ones(self.past_length, dtype=np.float32)
 
         return {
-            "past_values":          torch.from_numpy(past_values).unsqueeze(-1),
-            "past_time_features":   torch.from_numpy(past_feats),
-            "past_observed_mask":   torch.from_numpy(observed).unsqueeze(-1),
-            "past_dynamic_real":    torch.from_numpy(past_cov.astype(np.float32)),
-            "future_values":        torch.from_numpy(future_values).unsqueeze(-1),
-            "future_time_features": torch.from_numpy(future_feats),
+            "past_values":          torch.from_numpy(past_values),
+            "past_time_features":   torch.from_numpy(past_time_features),
+            "past_observed_mask":   torch.from_numpy(observed),
+            "future_values":        torch.from_numpy(future_values),
+            "future_time_features": torch.from_numpy(future_time_features),
         }
 
 
@@ -193,8 +203,8 @@ def build_model(cfg: TrainConfig) -> TimeSeriesTransformerForPrediction:
         context_length=cfg.context_length,
         input_size=cfg.input_size,
         num_time_features=NUM_TIME_FEATURES,
-        lags_sequence=[2, 4, 6],  # optional: add lag features (e.g. t-2, t-4, t-6)
-        num_dynamic_real_features=cfg.num_covariates,   # ← key config line
+        lags_sequence=list(cfg.lags_sequence),
+        num_dynamic_real_features=cfg.num_covariates,
         d_model=cfg.d_model,
         encoder_layers=cfg.encoder_layers,
         decoder_layers=cfg.decoder_layers,
@@ -232,7 +242,6 @@ def run_epoch(model, loader, optimizer, scheduler, device, grad_clip, train: boo
                 past_values=batch["past_values"],
                 past_time_features=batch["past_time_features"],
                 past_observed_mask=batch["past_observed_mask"],
-                past_dynamic_real=batch["past_dynamic_real"],   # ← pass covariates
                 future_values=batch["future_values"],
                 future_time_features=batch["future_time_features"],
             )
@@ -329,14 +338,12 @@ def train(cfg: TrainConfig):
             past_values=sample["past_values"],
             past_time_features=sample["past_time_features"],
             past_observed_mask=sample["past_observed_mask"],
-            past_dynamic_real=sample["past_dynamic_real"],      # ← covariates at inference
             future_time_features=sample["future_time_features"],
         )
 
-    # forecasts.sequences: (batch, num_samples, prediction_length, input_size)
-    median = forecasts.sequences.median(dim=1).values           # (batch, pred_len, 1)
-    print(f"Forecast shape (batch, pred_len, variates): {tuple(median.shape)}")
-    print(f"Example median forecast:\n  {median[0, :, 0].cpu().numpy()}")
+    median = forecasts.sequences.median(dim=1).values           # (batch, pred_len)
+    print(f"Forecast shape (batch, pred_len): {tuple(median.shape)}")
+    print(f"Example median forecast:\n  {median[0].cpu().numpy()}")
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +362,12 @@ def parse_args() -> TrainConfig:
     p.add_argument("--num-covariates",    type=int,   default=3,
                    help="Ignored when loading from target.csv; inferred from file columns.")
     p.add_argument("--output-dir",        type=str,   default="checkpoints")
+    p.add_argument("--lags",              type=str,   default="1,2",
+                   help="Comma-separated positive lags, e.g. '1,2,6'")
     args = p.parse_args()
+    lags = tuple(int(x.strip()) for x in args.lags.split(",") if x.strip())
+    if not lags or any(l <= 0 for l in lags):
+        raise ValueError(f"Invalid --lags value: {args.lags}. Use positive integers, e.g. 1,2,6")
 
     return TrainConfig(
         epochs=args.epochs,
@@ -366,6 +378,7 @@ def parse_args() -> TrainConfig:
         num_series=args.num_series,
         series_length=args.series_length,
         num_covariates=args.num_covariates,
+        lags_sequence=lags,
         output_dir=args.output_dir,
     )
 

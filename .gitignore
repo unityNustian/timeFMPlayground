@@ -10,3 +10,4 @@ wheels/
 .venv
 *.csv
 timesfm
+.DS_Store
