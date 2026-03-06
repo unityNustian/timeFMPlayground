@@ -51,8 +51,8 @@ class TrainConfig:
     decoder_attention_heads: int = 4
     encoder_ffn_dim: int = 128
     decoder_ffn_dim: int = 128
-    dropout: float = 0.1
-    lags_sequence: tuple = (1, 2, 3, 6, 12)
+    dropout: float = 0.01
+    lags_sequence: tuple = (1, 2, 4, 8, 12)
 
     # Training
     epochs: int = 10
