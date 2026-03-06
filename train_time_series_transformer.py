@@ -328,10 +328,12 @@ def train(cfg: TrainConfig):
 
     # Inference demo
     print("\nRunning inference on one val batch …")
-    model.load_state_dict(torch.load(best_path, map_location=device))
+    inference_device = torch.device("cpu")
+    model = model.to(inference_device)
+    model.load_state_dict(torch.load(best_path, map_location=inference_device))
     model.eval()
 
-    sample = {k: v.to(device) for k, v in next(iter(val_loader)).items()}
+    sample = {k: v.to(inference_device) for k, v in next(iter(val_loader)).items()}
 
     with torch.no_grad():
         forecasts = model.generate(
