@@ -56,7 +56,7 @@ class TrainConfig:
 
     # Training
     epochs: int = 10
-    batch_size: int = 32
+    batch_size: int = 200
     learning_rate: float = 1e-3
     grad_clip: float = 1.0
     val_split: float = 0.1
