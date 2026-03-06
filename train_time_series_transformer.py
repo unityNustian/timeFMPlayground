@@ -52,7 +52,7 @@ class TrainConfig:
     encoder_ffn_dim: int = 128
     decoder_ffn_dim: int = 128
     dropout: float = 0.01
-    lags_sequence: tuple = (1, 2, 4, 8, 12)
+    lags_sequence: tuple = (1, 2)
 
     # Training
     epochs: int = 10
@@ -193,7 +193,7 @@ def build_model(cfg: TrainConfig) -> TimeSeriesTransformerForPrediction:
         context_length=cfg.context_length,
         input_size=cfg.input_size,
         num_time_features=NUM_TIME_FEATURES,
-        lags_sequence=list(cfg.lags_sequence),
+        lags_sequence=[2, 4, 6],  # optional: add lag features (e.g. t-2, t-4, t-6)
         num_dynamic_real_features=cfg.num_covariates,   # ← key config line
         d_model=cfg.d_model,
         encoder_layers=cfg.encoder_layers,
@@ -348,7 +348,7 @@ def parse_args() -> TrainConfig:
     p.add_argument("--epochs",            type=int,   default=10)
     p.add_argument("--batch-size",        type=int,   default=32)
     p.add_argument("--prediction-length", type=int,   default=12)
-    p.add_argument("--context-length",    type=int,   default=48)
+    p.add_argument("--context-length",    type=int,   default=72)
     p.add_argument("--lr",                type=float, default=1e-3)
     p.add_argument("--num-series",        type=int,   default=64)
     p.add_argument("--series-length",     type=int,   default=500)
